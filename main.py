@@ -11,15 +11,26 @@ API_KEY = os.environ["TWELVE_DATA_API_KEY"]
 
 CHAT_ID = 7353190184
 
-last_sent_candle = None
+PAIRS = [
+    "EUR/USD",
+    "GBP/USD",
+    "USD/JPY",
+    "USD/CHF",
+    "AUD/USD",
+    "USD/CAD",
+    "EUR/JPY",
+    "GBP/JPY"
+]
+
+last_results = {}
 
 
-def get_signal():
+def get_market_data(pair):
     url = "https://api.twelvedata.com/time_series"
 
     params = {
-        "symbol": "EUR/USD",
-        "interval": "1min",
+        "symbol": pair,
+        "interval": "5min",
         "outputsize": 100,
         "apikey": API_KEY
     }
@@ -28,7 +39,7 @@ def get_signal():
     data = response.json()
 
     if "values" not in data:
-        print("Market data error:", data)
+        print(f"{pair} ERROR:", data)
         return None
 
     df = pd.DataFrame(data["values"])
@@ -38,7 +49,6 @@ def get_signal():
     for col in ["open", "high", "low", "close"]:
         df[col] = pd.to_numeric(df[col])
 
-    # A jera candles daga tsoho zuwa sabo
     df = df.sort_values("datetime").reset_index(drop=True)
 
     # EMA
@@ -68,19 +78,19 @@ def get_signal():
     up = 0
     down = 0
 
-    # EMA confirmation
+    # Trend
     if latest["EMA20"] > latest["EMA50"]:
         up += 1
     elif latest["EMA20"] < latest["EMA50"]:
         down += 1
 
-    # RSI confirmation
+    # RSI
     if 50 < latest["RSI"] < 70:
         up += 1
     elif 30 < latest["RSI"] < 50:
         down += 1
 
-    # Candle confirmation
+    # Candle
     if latest["close"] > latest["open"]:
         up += 1
     elif latest["close"] < latest["open"]:
@@ -93,85 +103,103 @@ def get_signal():
     else:
         signal = "⚪ NO SIGNAL"
 
-    return latest, up, down, signal
+    return {
+        "pair": pair,
+        "price": latest["close"],
+        "rsi": latest["RSI"],
+        "up": up,
+        "down": down,
+        "signal": signal,
+        "candle_time": str(latest["datetime"])
+    }
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 ABUBAKAR BINARY SIGNALS\n\n"
         "✅ Bot yana aiki lafiya!\n"
-        "📊 Automatic market analysis yana aiki."
+        "🔎 Ana binciken currency pairs da yawa.\n"
+        "⏱️ Timeframe: 5 Minutes\n\n"
+        "⚠️ DEMO/TEST — ba garanti ba."
     )
 
 
 async def signal(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    result = get_signal()
-
-    if result is None:
+    if not last_results:
         await update.message.reply_text(
-            "❌ An kasa samun market data yanzu."
+            "⏳ Har yanzu ana tattara market data. "
+            "Sake gwadawa bayan ɗan lokaci."
         )
         return
 
-    latest, up, down, signal_text = result
+    strong_signals = [
+        r for r in last_results.values()
+        if r["signal"] != "⚪ NO SIGNAL"
+    ]
 
-    message = (
-        "🤖 ABUBAKAR BINARY SIGNALS\n\n"
-        "📊 Pair: EUR/USD\n"
-        f"💰 Price: {latest['close']}\n"
-        f"📈 RSI: {latest['RSI']:.2f}\n"
-        f"🟢 UP Score: {up}/3\n"
-        f"🔴 DOWN Score: {down}/3\n\n"
-        f"🎯 SIGNAL: {signal_text}\n"
-        "⏱️ Timeframe: 1 Minute\n\n"
-        "⚠️ DEMO/TEST — ba garanti ba."
-    )
+    if not strong_signals:
+        await update.message.reply_text(
+            "⚪ BABU STRONG SIGNAL YANZU\n\n"
+            "⏱️ Timeframe: 5 Minutes\n"
+            "Ka jira sabon market analysis."
+        )
+        return
+
+    message = "🤖 ABUBAKAR BINARY SIGNALS\n\n"
+    message += "🚨 STRONG SIGNALS\n\n"
+
+    for r in strong_signals:
+        message += (
+            f"📊 Pair: {r['pair']}\n"
+            f"💰 Price: {r['price']}\n"
+            f"📈 RSI: {r['rsi']:.2f}\n"
+            f"🎯 SIGNAL: {r['signal']}\n"
+            "⏱️ Expiry/Timeframe: 5 Minutes\n"
+            "━━━━━━━━━━━━━━\n"
+        )
+
+    message += "\n⚠️ DEMO/TEST — ba garanti ba."
 
     await update.message.reply_text(message)
 
 
 async def automatic_analysis(app):
+    global last_results
 
-    global last_sent_candle
-
-    print("🤖 AUTOMATIC ANALYSIS YA FARA")
+    print("🤖 AUTOMATIC 5-MINUTE ANALYSIS YA FARA")
 
     while True:
 
-        try:
+        for pair in PAIRS:
 
-            result = get_signal()
+            try:
+                result = get_market_data(pair)
 
-            if result is not None:
+                if result is not None:
 
-                latest, up, down, signal_text = result
+                    last_results[pair] = result
 
-                candle_time = str(latest["datetime"])
+                    print(
+                        f"{pair} | "
+                        f"Price: {result['price']} | "
+                        f"UP: {result['up']}/3 | "
+                        f"DOWN: {result['down']}/3 | "
+                        f"{result['signal']}"
+                    )
 
-                print(
-                    f"EUR/USD | "
-                    f"Price: {latest['close']} | "
-                    f"UP: {up}/3 | "
-                    f"DOWN: {down}/3 | "
-                    f"{signal_text}"
-                )
-
-                # A aika signal idan 3/3 kawai
-                if signal_text != "⚪ NO SIGNAL":
-
-                    # Kada a sake aika signal na candle daya
-                    if candle_time != last_sent_candle:
+                    if result["signal"] != "⚪ NO SIGNAL":
 
                         message = (
                             "🤖 ABUBAKAR BINARY SIGNALS\n\n"
-                            "🚨 NEW SIGNAL\n\n"
-                            "📊 Pair: EUR/USD\n"
-                            f"💰 Price: {latest['close']}\n"
-                            f"📈 RSI: {latest['RSI']:.2f}\n\n"
-                            f"🎯 SIGNAL: {signal_text}\n"
-                            "⏱️ Timeframe: 1 Minute\n\n"
-                            "⚠️ DEMO/TEST — ba garanti ba."
+                            "🚨 NEW 5-MINUTE SIGNAL\n\n"
+                            f"📊 Pair: {result['pair']}\n"
+                            f"💰 Price: {result['price']}\n"
+                            f"📈 RSI: {result['rsi']:.2f}\n"
+                            f"🟢 UP Score: {result['up']}/3\n"
+                            f"🔴 DOWN Score: {result['down']}/3\n\n"
+                            f"🎯 SIGNAL: {result['signal']}\n"
+                            "⏱️ Timeframe: 5 Minutes\n\n"
+                            "⚠️ DEMO/TEST —  garanti ."
                         )
 
                         await app.bot.send_message(
@@ -179,18 +207,15 @@ async def automatic_analysis(app):
                             text=message
                         )
 
-                        last_sent_candle = candle_time
+                        print(
+                            f"📩 {pair} SIGNAL AN AIKA TELEGRAM ✅"
+                        )
 
-                        print("📩 SIGNAL AN AIKA TELEGRAM ✅")
+            except Exception as e:
+                print(f"❌ {pair} ERROR:", e)
 
-            else:
-                print("❌ Babu market data.")
-
-        except Exception as e:
-            print("❌ ERROR:", e)
-
-        # Jira sabon candle
-        await asyncio.sleep(60)
+        # Jira sabon analysis bayan minti 5
+        await asyncio.sleep(300)
 
 
 async def post_init(app):
