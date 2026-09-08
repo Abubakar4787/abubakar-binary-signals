@@ -98,4 +98,186 @@ def get_analysis(pair):
             down += 1
 
         # RSI
-       
+        if 50 < latest["RSI"] < 70:
+            up += 1
+        elif 30 < latest["RSI"] < 50:
+            down += 1
+
+        # Candle
+        if latest["close"] > latest["open"]:
+            up += 1
+        elif latest["close"] < latest["open"]:
+            down += 1
+
+        if up == 3:
+            signal = "🟢 UP ⬆️"
+        elif down == 3:
+            signal = "🔴 DOWN ⬇️"
+        else:
+            signal = "⚪ NO SIGNAL"
+
+        return {
+            "pair": pair,
+            "price": latest["close"],
+            "rsi": latest["RSI"],
+            "signal": signal,
+            "candle_time": latest["datetime"]
+        }, "open"
+
+    except Exception as e:
+        print(f"{pair} ERROR:", e)
+        return None, "error"
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    keyboard = []
+
+    row = []
+
+    for pair in PAIRS:
+        row.append(
+            InlineKeyboardButton(
+                pair,
+                callback_data=f"pair:{pair}"
+            )
+        )
+
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+
+    if row:
+        keyboard.append(row)
+
+    keyboard.append([
+        InlineKeyboardButton(
+            "🔄 Refresh Pairs",
+            callback_data="refresh"
+        )
+    ])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        "🤖 ABUBAKAR BINARY SIGNALS\n\n"
+        "🔎 Zabi currency pair ɗin da kake son analysis:\n\n"
+        "⏱️ Timeframe: 5 Minutes\n"
+        "📊 Bot zai yi analysis na pair ɗin da ka zaɓa kawai.",
+        reply_markup=reply_markup
+    )
+
+
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    query = update.callback_query
+
+    await query.answer()
+
+    if query.data == "refresh":
+
+        await query.edit_message_text(
+            "🤖 ABUBAKAR BINARY SIGNALS\n\n"
+            "🔎 Zabi pair:"
+        )
+
+        keyboard = []
+        row = []
+
+        for pair in PAIRS:
+
+            row.append(
+                InlineKeyboardButton(
+                    pair,
+                    callback_data=f"pair:{pair}"
+                )
+            )
+
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+
+        if row:
+            keyboard.append(row)
+
+        keyboard.append([
+            InlineKeyboardButton(
+                "🔄 Refresh Pairs",
+                callback_data="refresh"
+            )
+        ])
+
+        await query.message.reply_text(
+            "🔎 ZABI PAIR:",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+        return
+
+    if query.data.startswith("pair:"):
+
+        pair = query.data.split(":", 1)[1]
+
+        await query.edit_message_text(
+            f"⏳ Ana yin analysis na {pair}...\n\n"
+            "⏱️ Timeframe: 5 Minutes"
+        )
+
+        result, status = get_analysis(pair)
+
+        if status == "closed":
+
+            await query.message.reply_text(
+                "🔴 MARKET A RUFE\n\n"
+                f"📊 Pair: {pair}\n\n"
+                "Ba zan yi analysis ba yanzu.\n"
+                "⏳ Jira market ya buɗe sannan ka sake zaɓar pair."
+            )
+
+            return
+
+        if status == "error" or result is None:
+
+            await query.message.reply_text(
+                "❌ An samu matsala wajen samun market data.\n\n"
+                f"📊 Pair: {pair}\n"
+                "Ka sake gwadawa daga baya."
+            )
+
+            return
+
+        await query.message.reply_text(
+            "🤖 ABUBAKAR BINARY SIGNALS\n\n"
+            f"📊 Pair: {result['pair']}\n"
+            f"💰 Price: {result['price']}\n"
+            f"📈 RSI: {result['rsi']:.2f}\n\n"
+            f"🎯 MARKET: {result['signal']}\n"
+            "⏱️ TIMEFRAME: 5 Minutes\n\n"
+            "⚠️ DEMO/TEST — ba garanti ba."
+        )
+
+
+app = (
+    Application.builder()
+    .token(TOKEN)
+    .build()
+)
+
+app.add_handler(
+    CommandHandler("start", start)
+)
+
+app.add_handler(
+    CommandHandler("signal", start)
+)
+
+app.add_handler(
+    CallbackQueryHandler(button_handler)
+)
+
+print("🤖 ABUBAKAR BINARY SIGNALS BOT YA FARA")
+
+app.run_polling()
