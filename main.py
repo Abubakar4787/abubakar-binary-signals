@@ -1,10 +1,15 @@
 import os
-import requests
-import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import requests
+import pandas as pd
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -12,12 +17,13 @@ from telegram.ext import (
     ContextTypes,
 )
 
-BOT_TOKEN = os.environ["BOT_TOKEN"]
-TWELVE_DATA_API_KEY = os.environ["TWELVE_DATA_API_KEY"]
 
 # =========================
-# REAL MARKET PAIRS
+# SETTINGS
 # =========================
+
+BOT_TOKEN = os.environ["BOT_TOKEN"]
+TWELVE_DATA_API_KEY = os.environ["TWELVE_DATA_API_KEY"]
 
 REAL_PAIRS = [
     "EUR/USD",
@@ -30,13 +36,6 @@ REAL_PAIRS = [
     "GBP/JPY",
 ]
 
-# =========================
-# OTC PAIRS
-# NOTE:
-# Twelve Data ba OTC data ba ne.
-# Wadannan suna matsayin menu kawai.
-# =========================
-
 OTC_PAIRS = [
     "EUR/USD OTC",
     "GBP/USD OTC",
@@ -48,130 +47,161 @@ OTC_PAIRS = [
     "GBP/JPY OTC",
 ]
 
-# User selections
-user_pair = {}
-user_expiry = {}
+
+# =========================
+# MARKET STATUS
+# =========================
+
+def market_is_open():
+    """
+    Simple forex market-hours check.
+    Uses Nigeria/Lagos time.
+    """
+
+    now = datetime.now(ZoneInfo("Africa/Lagos"))
+
+    # Saturday and Sunday
+    if now.weekday() >= 5:
+        return False
+
+    # Friday after 10pm Nigeria time
+    if now.weekday() == 4 and now.hour >= 22:
+        return False
+
+    # Monday before 12am
+    if now.weekday() == 0 and now.hour < 0:
+        return False
+
+    return True
 
 
 # =========================
-# MARKET DATA
+# MARKET ANALYSIS
 # =========================
 
 def get_analysis(pair, expiry):
 
-    # OTC ba za mu yi amfani da Twelve Data mu kira shi OTC ba
-    if "OTC" in pair:
-        return {
-            "status": "otc_unavailable"
+    try:
+
+        if not market_is_open():
+            return {
+                "status": "closed",
+                "message": "Forex market a rufe yanzu."
+            }
+
+        # Remove OTC label
+        if " OTC" in pair:
+            return {
+                "status": "error",
+                "message": (
+                    "OTC data source bai haɗu da bot ba tukuna. "
+                    "Ba za mu yi amfani da real forex data mu kira shi OTC ba."
+                )
+            }
+
+        # =========================
+        # INTERVAL
+        # =========================
+
+        if expiry == 5:
+            interval = "5min"
+        else:
+            interval = "1min"
+
+        # =========================
+        # TWELVE DATA
+        # =========================
+
+        url = "https://api.twelvedata.com/time_series"
+
+        params = {
+            "symbol": pair,
+            "interval": interval,
+            "outputsize": 100,
+            "apikey": TWELVE_DATA_API_KEY,
         }
 
-    # Analysis interval
-    if expiry == 5:
-        interval = "5min"
-    else:
-        interval = "1min"
-
-    url = "https://api.twelvedata.com/time_series"
-
-    params = {
-        "symbol": pair,
-        "interval": interval,
-        "outputsize": 100,
-        "apikey": TWELVE_DATA_API_KEY,
-    }
-
-    try:
         response = requests.get(
             url,
             params=params,
-            timeout=15
+            timeout=20
         )
 
         data = response.json()
 
-        # API error
-        if "code" in data and data.get("code") != 200:
+        if "values" not in data:
+
             return {
                 "status": "error",
-                "message": data.get(
-                    "message",
-                    "Unknown API error"
+                "message": str(
+                    data.get(
+                        "message",
+                        "An samu matsala wajen samun market data."
+                    )
                 )
             }
 
-        if "values" not in data:
-            return {
-                "status": "closed"
-            }
+        # =========================
+        # DATAFRAME
+        # =========================
 
         df = pd.DataFrame(data["values"])
 
-        if df.empty:
-            return {
-                "status": "closed"
-            }
+        numeric_columns = [
+            "open",
+            "high",
+            "low",
+            "close"
+        ]
 
-        # Convert numbers
-        for column in ["open", "high", "low", "close"]:
-            df[column] = pd.to_numeric(df[column])
+        for column in numeric_columns:
+            df[column] = pd.to_numeric(
+                df[column],
+                errors="coerce"
+            )
 
-        df = df.sort_values(
-            "datetime"
-        ).reset_index(drop=True)
+        df = df.dropna()
 
-        if len(df) < 60:
+        if len(df) < 50:
             return {
                 "status": "error",
-                "message": "Ba a samu isasshen market data ba."
+                "message": "Market data bai isa ba domin analysis."
             }
 
-        # =========================
-        # EMA TREND
-        # =========================
-
-        df["EMA20"] = df["close"].ewm(
-            span=20,
-            adjust=False
-        ).mean()
-
-        df["EMA50"] = df["close"].ewm(
-            span=50,
-            adjust=False
-        ).mean()
+        df = df.sort_values("datetime")
 
         # =========================
-        # RSI 14
+        # EMA
+        # =========================
+
+        df["EMA20"] = (
+            df["close"]
+            .ewm(span=20, adjust=False)
+            .mean()
+        )
+
+        df["EMA50"] = (
+            df["close"]
+            .ewm(span=50, adjust=False)
+            .mean()
+        )
+
+        # =========================
+        # RSI
         # =========================
 
         delta = df["close"].diff()
 
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
 
-        avg_gain = gain.rolling(14).mean()
-        avg_loss = loss.rolling(14).mean()
+        average_gain = gain.rolling(14).mean()
+        average_loss = loss.rolling(14).mean()
 
-        rs = avg_gain / avg_loss.replace(
-            0,
-            0.000001
-        )
+        rs = average_gain / average_loss.replace(0, 0.000001)
 
         df["RSI"] = 100 - (
             100 / (1 + rs)
-        )
-
-        # =========================
-        # SUPPORT / RESISTANCE
-        # =========================
-
-        recent = df.tail(20)
-
-        support = float(
-            recent["low"].min()
-        )
-
-        resistance = float(
-            recent["high"].max()
         )
 
         # =========================
@@ -186,36 +216,14 @@ def get_analysis(pair, expiry):
         ema50 = float(last["EMA50"])
         rsi = float(last["RSI"])
 
-        open_price = float(last["open"])
-        close_price = float(last["close"])
-
-        # Candle direction
-        candle_up = close_price > open_price
-        candle_down = close_price < open_price
-
-        # Previous candle comparison
-        momentum_up = close_price > float(
-            previous["close"]
-        )
-
-        momentum_down = close_price < float(
-            previous["close"]
-        )
-
         # =========================
-        # SUPPORT / RESISTANCE ZONE
+        # SUPPORT / RESISTANCE
         # =========================
 
-        distance_support = abs(
-            price - support
-        ) / price
+        recent = df.tail(20)
 
-        distance_resistance = abs(
-            resistance - price
-        ) / price
-
-        near_support = distance_support <= 0.0015
-        near_resistance = distance_resistance <= 0.0015
+        support = float(recent["low"].min())
+        resistance = float(recent["high"].max())
 
         # =========================
         # CONFIRMATIONS
@@ -231,28 +239,31 @@ def get_analysis(pair, expiry):
             down_votes += 1
 
         # 2. RSI
-        if rsi >= 50:
+        if rsi > 50 and rsi < 70:
             up_votes += 1
-        elif rsi < 50:
+        elif rsi < 50 and rsi > 30:
             down_votes += 1
 
-        # 3. Candle
-        if candle_up:
+        # 3. Candle direction
+        if float(last["close"]) > float(last["open"]):
             up_votes += 1
-        elif candle_down:
+        elif float(last["close"]) < float(last["open"]):
             down_votes += 1
 
         # 4. Momentum
-        if momentum_up:
+        if float(last["close"]) > float(previous["close"]):
             up_votes += 1
-        elif momentum_down:
+        elif float(last["close"]) < float(previous["close"]):
             down_votes += 1
 
         # 5. Support / Resistance
-        if near_support and candle_up:
+        support_distance = abs(price - support) / price
+        resistance_distance = abs(resistance - price) / price
+
+        if support_distance <= 0.0015:
             up_votes += 1
 
-        if near_resistance and candle_down:
+        elif resistance_distance <= 0.0015:
             down_votes += 1
 
         # =========================
@@ -269,17 +280,21 @@ def get_analysis(pair, expiry):
             signal = "NO SIGNAL ⚠️"
 
         # =========================
-        # TREND LABEL
+        # TREND
         # =========================
 
         if ema20 > ema50:
-            trend = "BULLISH 📈"
+            trend = "BULLISH 🟢"
 
         elif ema20 < ema50:
-            trend = "BEARISH 📉"
+            trend = "BEARISH 🔴"
 
         else:
-            trend = "SIDEWAYS ➡️"
+            trend = "SIDEWAYS ⚪"
+
+        # =========================
+        # RESULT
+        # =========================
 
         return {
             "status": "open",
@@ -298,6 +313,7 @@ def get_analysis(pair, expiry):
         }
 
     except Exception as e:
+
         return {
             "status": "error",
             "message": str(e)
@@ -308,40 +324,31 @@ def get_analysis(pair, expiry):
 # START
 # =========================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "💱 REAL MARKET",
-                callback_data="real_market"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🟣 OTC MARKET",
-                callback_data="otc_market"
-            )
-        ],
-    ]
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     await update.message.reply_text(
         "🤖 ABUBAKAR BINARY SIGNALS\n\n"
-        "Zaɓi market ɗin da kake so:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        "Bot ya haɗu lafiya! ✅\n\n"
+        "Rubuta /signal domin samun market analysis."
     )
 
 
 # =========================
-# SIGNAL COMMAND
+# SIGNAL MENU
 # =========================
 
-async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def signal_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     keyboard = [
         [
             InlineKeyboardButton(
-                "💱 REAL MARKET",
+                "🌍 REAL MARKET",
                 callback_data="real_market"
             )
         ],
@@ -354,19 +361,81 @@ async def signal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     await update.message.reply_text(
-        "📊 SIGNAL MENU\n\n"
+        "📊 ABUBAKAR BINARY SIGNALS\n\n"
         "Zaɓi market:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
 # =========================
+# PAIR BUTTONS
+# =========================
+
+def pair_keyboard(pairs, prefix):
+
+    keyboard = []
+
+    for i in range(0, len(pairs), 2):
+
+        row = []
+
+        for pair in pairs[i:i + 2]:
+
+            row.append(
+                InlineKeyboardButton(
+                    pair,
+                    callback_data=f"{prefix}|{pair}"
+                )
+            )
+
+        keyboard.append(row)
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+# =========================
+# EXPIRY BUTTONS
+# =========================
+
+def expiry_keyboard():
+
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "1 MINUTE",
+                callback_data="expiry|1"
+            ),
+            InlineKeyboardButton(
+                "2 MINUTES",
+                callback_data="expiry|2"
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "3 MINUTES",
+                callback_data="expiry|3"
+            ),
+            InlineKeyboardButton(
+                "5 MINUTES",
+                callback_data="expiry|5"
+            ),
+        ],
+    ]
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+# =========================
 # BUTTON HANDLER
 # =========================
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     query = update.callback_query
+
     await query.answer()
 
     data = query.data
@@ -377,33 +446,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "real_market":
 
-        buttons = []
-
-        for i in range(0, len(REAL_PAIRS), 2):
-
-            row = []
-
-            row.append(
-                InlineKeyboardButton(
-                    REAL_PAIRS[i],
-                    callback_data=f"pair:{REAL_PAIRS[i]}"
-                )
-            )
-
-            if i + 1 < len(REAL_PAIRS):
-                row.append(
-                    InlineKeyboardButton(
-                        REAL_PAIRS[i + 1],
-                        callback_data=f"pair:{REAL_PAIRS[i + 1]}"
-                    )
-                )
-
-            buttons.append(row)
-
         await query.edit_message_text(
-            "💱 REAL MARKET\n\n"
-            "Zaɓi pair:",
-            reply_markup=InlineKeyboardMarkup(buttons)
+            "🌍 REAL MARKET\n\n"
+            "Zaɓi currency pair:",
+            reply_markup=pair_keyboard(
+                REAL_PAIRS,
+                "realpair"
+            )
         )
 
         return
@@ -414,35 +463,32 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "otc_market":
 
-        buttons = []
-
-        for i in range(0, len(OTC_PAIRS), 2):
-
-            row = []
-
-            row.append(
-                InlineKeyboardButton(
-                    OTC_PAIRS[i],
-                    callback_data=f"otc:{OTC_PAIRS[i]}"
-                )
-            )
-
-            if i + 1 < len(OTC_PAIRS):
-                row.append(
-                    InlineKeyboardButton(
-                        OTC_PAIRS[i + 1],
-                        callback_data=f"otc:{OTC_PAIRS[i + 1]}"
-                    )
-                )
-
-            buttons.append(row)
-
         await query.edit_message_text(
             "🟣 OTC MARKET\n\n"
-            "Zaɓi OTC pair:\n\n"
-            "⚠️ OTC analysis bai kunna ba tukuna saboda "
-            "Twelve Data ba ya samar da ainihin Quotex/Pocket Option OTC data.",
-            reply_markup=InlineKeyboardMarkup(buttons)
+            "Zaɓi OTC pair:",
+            reply_markup=pair_keyboard(
+                OTC_PAIRS,
+                "otcpair"
+            )
+        )
+
+        return
+
+    # =========================
+    # REAL PAIR
+    # =========================
+
+    if data.startswith("realpair|"):
+
+        pair = data.split("|", 1)[1]
+
+        context.user_data["pair"] = pair
+        context.user_data["market_type"] = "real"
+
+        await query.edit_message_text(
+            f"💱 PAIR: {pair}\n\n"
+            "Zaɓi expiry:",
+            reply_markup=expiry_keyboard()
         )
 
         return
@@ -451,104 +497,77 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # OTC PAIR
     # =========================
 
-    if data.startswith("otc:"):
+    if data.startswith("otcpair|"):
 
-        pair = data.replace("otc:", "", 1)
+        pair = data.split("|", 1)[1]
+
+        context.user_data["pair"] = pair
+        context.user_data["market_type"] = "otc"
 
         await query.edit_message_text(
-            f"🟣 {pair}\n\n"
-            "⚠️ OTC DATA SOURCE BA A HAƊA BA.\n\n"
-            "Ba zan yi amfani da Real Market data in kira shi OTC ba.\n"
-            "Da zarar an haɗa ainihin OTC data source, za mu kunna analysis."
+            f"🟣 OTC PAIR: {pair}\n\n"
+            "Zaɓi expiry:",
+            reply_markup=expiry_keyboard()
         )
 
         return
 
     # =========================
-    # PAIR SELECTED
+    # EXPIRY
     # =========================
 
-    if data.startswith("pair:"):
+    if data.startswith("expiry|"):
 
-        pair = data.replace("pair:", "", 1)
-
-        user_pair[query.from_user.id] = pair
-
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    "1 MINUTE",
-                    callback_data="expiry:1"
-                ),
-                InlineKeyboardButton(
-                    "2 MINUTES",
-                    callback_data="expiry:2"
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    "3 MINUTES",
-                    callback_data="expiry:3"
-                ),
-                InlineKeyboardButton(
-                    "5 MINUTES",
-                    callback_data="expiry:5"
-                ),
-            ],
-        ]
-
-        await query.edit_message_text(
-            f"💱 PAIR: {pair}\n\n"
-            "⏱️ Zaɓi trade expiry:",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+        expiry = int(
+            data.split("|", 1)[1]
         )
 
-        return
-
-    # =========================
-    # EXPIRY SELECTED
-    # =========================
-
-    if data.startswith("expiry:"):
-
-        expiry = int(data.replace("expiry:", "", 1))
-
-        user_id = query.from_user.id
-
-        pair = user_pair.get(user_id)
+        pair = context.user_data.get("pair")
 
         if not pair:
 
             await query.edit_message_text(
-                "⚠️ Ba a zaɓi pair ba.\n"
-                "Ka sake amfani da /signal."
+                "❌ Ba a zaɓi pair ba.\n\n"
+                "Rubuta /signal ka sake farawa."
             )
 
             return
 
-        user_expiry[user_id] = expiry
+        # =========================
+        # ANALYSIS
+        # =========================
 
-        # Current Nigeria time
-        now = datetime.now(
-            ZoneInfo("Africa/Lagos")
+        result = get_analysis(
+            pair,
+            expiry
         )
-
-        entry_time = now.strftime("%H:%M:%S")
-
-        await query.edit_message_text(
-            f"🔎 ANA YIN ANALYSIS...\n\n"
-            f"💱 Pair: {pair}\n"
-            f"⏱️ Expiry: {expiry} minute\n"
-            f"🕐 Entry Time: {entry_time} 🇳🇬"
-        )
-
-        result = get_analysis(pair, expiry)
 
         # =========================
         # MARKET CLOSED
         # =========================
 
-        if 
+        if result["status"] == "closed":
+
+            await query.edit_message_text(
+                f"🔴 MARKET A RUFE\n\n"
+                f"💱 Pair: {pair}\n\n"
+                "Jira market ya buɗe kafin yin analysis.\n"
+                "⚠️ Ba a bada signal idan market ya rufe."
+            )
+
+            return
+
+        # =========================
+        # API ERROR
+        # =========================
+
+        if result["status"] == "error":
+
+            await query.edit_message_text(
+                "❌ AN SAMU MATSALA\n\n"
+                f"{result['message']}\n\n"
+                "Ka sake gwadawa daga baya."
+            )
 
             return
 
@@ -557,6 +576,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # =========================
 
         signal = result["signal"]
+
+        entry_time = datetime.now(
+            ZoneInfo("Africa/Lagos")
+        ).strftime("%H:%M:%S")
 
         message = (
             "🤖 ABUBAKAR BINARY SIGNALS\n"
@@ -570,14 +593,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📉 EMA50: {result['ema50']:.5f}\n"
             f"📊 RSI: {result['rsi']:.2f}\n\n"
             f"⬆️ UP CONFIRMATION: {result['up_votes']}/5\n"
-f"⬇️ DOWN CONFIRMATION: {result['down_votes']}/5\n"
-f"📈 TREND: {result['trend']}\n"
-f"🟢 SUPPORT: {result['support']:.5f}\n" f"🔴 RESISTANCE: {result['resistance']:.5f}\n\n"
-   f"🎯 SIGNAL: {signal}\n\n"          "⚠️ Wannan analysis ne kawai, ba garantin win ba.\n"
+            f"⬇️ DOWN CONFIRMATION: {result['down_votes']}/5\n"
+            f"📈 TREND: {result['trend']}\n"
+            f"🟢 SUPPORT: {result['support']:.5f}\n"
+            f"🔴 RESISTANCE: {result['resistance']:.5f}\n\n"
+            f"🎯 SIGNAL: {signal}\n\n"
+            "⚠️ Wannan analysis ne kawai, ba garantin win ba.\n"
             "Yi amfani da DEMO kafin real money."
         )
 
-        await query.edit_message_text(message)
+        await query.edit_message_text(
+            message
+        )
 
 
 # =========================
@@ -594,21 +621,35 @@ def main():
     )
 
     app.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start
+        )
     )
 
     app.add_handler(
-        CommandHandler("signal", signal_command)
+        CommandHandler(
+            "signal",
+            signal_command
+        )
     )
 
     app.add_handler(
-        CallbackQueryHandler(button_handler)
+        CallbackQueryHandler(
+            button_handler
+        )
     )
 
-    print("🤖 ABUBAKAR BINARY SIGNALS BOT IS RUNNING...")
+    print(
+        "🤖 ABUBAKAR BINARY SIGNALS BOT IS RUNNING..."
+    )
 
     app.run_polling()
 
+
+# =========================
+# RUN
+# =========================
 
 if __name__ == "__main__":
     main()
