@@ -548,28 +548,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # MARKET CLOSED
         # =========================
 
-        if result["status"] == "closed":
-
-            await query.edit_message_text(
-                f"🔴 MARKET A RUFE\n\n"
-                f"💱 Pair: {pair}\n\n"
-                "Jira market ya buɗe kafin yin analysis.\n"
-                "⚠️ Ba a bada signal idan market ya rufe."
-            )
-
-            return
-
-        # =========================
-        # API ERROR
-        # =========================
-
-        if result["status"] == "error":
-
-            await query.edit_message_text(
-                "❌ AN SAMU MATSALA\n\n"
-                f"{result['message']}\n\n"
-                "Ka sake gwadawa daga baya."
-            )
+        if 
 
             return
 
@@ -590,10 +569,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📈 EMA20: {result['ema20']:.5f}\n"
             f"📉 EMA50: {result['ema50']:.5f}\n"
             f"📊 RSI: {result['rsi']:.2f}\n\n"
-            f"⬆️ UP CONFIRMATION: {result['up_votes']}/3\n"
-            f"⬇️ DOWN CONFIRMATION: {result['down_votes']}/3\n\n"
-            f"🎯 SIGNAL: {signal}\n\n"
-            "⚠️ Wannan analysis ne kawai, ba garantin win ba.\n"
+            f"⬆️ UP CONFIRMATION: {result['up_votes']}/5\n"
+f"⬇️ DOWN CONFIRMATION: {result['down_votes']}/5\n"
+f"📈 TREND: {result['trend']}\n"
+f"🟢 SUPPORT: {result['support']:.5f}\n" f"🔴 RESISTANCE: {result['resistance']:.5f}\n\n"
+   f"🎯 SIGNAL: {signal}\n\n"          "⚠️ Wannan analysis ne kawai, ba garantin win ba.\n"
             "Yi amfani da DEMO kafin real money."
         )
 
