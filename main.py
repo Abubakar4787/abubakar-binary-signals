@@ -66,8 +66,6 @@ def get_analysis(pair, expiry):
         }
 
     # Analysis interval
-    # 1, 2, 3 min expiry -> 1min market data
-    # 5 min expiry -> 5min market data
     if expiry == 5:
         interval = "5min"
     else:
@@ -95,7 +93,10 @@ def get_analysis(pair, expiry):
         if "code" in data and data.get("code") != 200:
             return {
                 "status": "error",
-                "message": data.get("message", "Unknown API error")
+                "message": data.get(
+                    "message",
+                    "Unknown API error"
+                )
             }
 
         if "values" not in data:
@@ -114,7 +115,9 @@ def get_analysis(pair, expiry):
         for column in ["open", "high", "low", "close"]:
             df[column] = pd.to_numeric(df[column])
 
-        df = df.sort_values("datetime").reset_index(drop=True)
+        df = df.sort_values(
+            "datetime"
+        ).reset_index(drop=True)
 
         if len(df) < 60:
             return {
@@ -123,11 +126,18 @@ def get_analysis(pair, expiry):
             }
 
         # =========================
-        # EMA
+        # EMA TREND
         # =========================
 
-        df["EMA20"] = df["close"].ewm(span=20).mean()
-        df["EMA50"] = df["close"].ewm(span=50).mean()
+        df["EMA20"] = df["close"].ewm(
+            span=20,
+            adjust=False
+        ).mean()
+
+        df["EMA50"] = df["close"].ewm(
+            span=50,
+            adjust=False
+        ).mean()
 
         # =========================
         # RSI 14
@@ -141,53 +151,135 @@ def get_analysis(pair, expiry):
         avg_gain = gain.rolling(14).mean()
         avg_loss = loss.rolling(14).mean()
 
-        rs = avg_gain / avg_loss.replace(0, 0.000001)
+        rs = avg_gain / avg_loss.replace(
+            0,
+            0.000001
+        )
 
-        df["RSI"] = 100 - (100 / (1 + rs))
+        df["RSI"] = 100 - (
+            100 / (1 + rs)
+        )
 
-        # Last candle
+        # =========================
+        # SUPPORT / RESISTANCE
+        # =========================
+
+        recent = df.tail(20)
+
+        support = float(
+            recent["low"].min()
+        )
+
+        resistance = float(
+            recent["high"].max()
+        )
+
+        # =========================
+        # LAST CANDLES
+        # =========================
+
         last = df.iloc[-1]
+        previous = df.iloc[-2]
 
         price = float(last["close"])
         ema20 = float(last["EMA20"])
         ema50 = float(last["EMA50"])
         rsi = float(last["RSI"])
 
+        open_price = float(last["open"])
+        close_price = float(last["close"])
+
         # Candle direction
-        candle_up = last["close"] > last["open"]
-        candle_down = last["close"] < last["open"]
+        candle_up = close_price > open_price
+        candle_down = close_price < open_price
+
+        # Previous candle comparison
+        momentum_up = close_price > float(
+            previous["close"]
+        )
+
+        momentum_down = close_price < float(
+            previous["close"]
+        )
 
         # =========================
-        # SIGNAL LOGIC
+        # SUPPORT / RESISTANCE ZONE
+        # =========================
+
+        distance_support = abs(
+            price - support
+        ) / price
+
+        distance_resistance = abs(
+            resistance - price
+        ) / price
+
+        near_support = distance_support <= 0.0015
+        near_resistance = distance_resistance <= 0.0015
+
+        # =========================
+        # CONFIRMATIONS
         # =========================
 
         up_votes = 0
         down_votes = 0
 
-        # EMA trend
+        # 1. EMA trend
         if ema20 > ema50:
             up_votes += 1
         elif ema20 < ema50:
             down_votes += 1
 
-        # RSI
+        # 2. RSI
         if rsi >= 50:
             up_votes += 1
         elif rsi < 50:
             down_votes += 1
 
-        # Candle
+        # 3. Candle
         if candle_up:
             up_votes += 1
         elif candle_down:
             down_votes += 1
 
-        if up_votes == 3:
+        # 4. Momentum
+        if momentum_up:
+            up_votes += 1
+        elif momentum_down:
+            down_votes += 1
+
+        # 5. Support / Resistance
+        if near_support and candle_up:
+            up_votes += 1
+
+        if near_resistance and candle_down:
+            down_votes += 1
+
+        # =========================
+        # SIGNAL
+        # =========================
+
+        if up_votes >= 4 and up_votes > down_votes:
             signal = "UP ⬆️"
-        elif down_votes == 3:
+
+        elif down_votes >= 4 and down_votes > up_votes:
             signal = "DOWN ⬇️"
+
         else:
             signal = "NO SIGNAL ⚠️"
+
+        # =========================
+        # TREND LABEL
+        # =========================
+
+        if ema20 > ema50:
+            trend = "BULLISH 📈"
+
+        elif ema20 < ema50:
+            trend = "BEARISH 📉"
+
+        else:
+            trend = "SIDEWAYS ➡️"
 
         return {
             "status": "open",
@@ -196,9 +288,12 @@ def get_analysis(pair, expiry):
             "ema20": ema20,
             "ema50": ema50,
             "rsi": rsi,
+            "support": support,
+            "resistance": resistance,
             "up_votes": up_votes,
             "down_votes": down_votes,
             "signal": signal,
+            "trend": trend,
             "interval": interval,
         }
 
