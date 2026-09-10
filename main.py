@@ -653,3 +653,12 @@ def main():
 
 if __name__ == "__main__":
     main()
+async def monitor_prices():
+    asset = "EURUSD_otc"
+    await client.start_realtime_price(asset, 60)  # Fara bin diddigin
+    while True:
+        prices = await client.get_realtime_price(asset)
+        if prices:
+            last_price = prices[-1]
+            print(f"Lokaci: {last_price['time']} | Farashi: {last_price['price']}")
+        await asyncio.sleep(1)  # Jira sakan ɗaya kafin ka sake dubawa
